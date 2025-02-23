@@ -41,6 +41,8 @@ function App() {
   const [requestAmount, setRequestAmount] = useState("");
   const [requestRecipient, setRequestRecipient] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [paymentLink, setPaymentLink] = useState("");
+  const [moneyRequests, setMoneyRequests] = useState([]);
 
   const splitBill = async () => {
     if (!billAmount || isNaN(billAmount) || Number(billAmount) <= 0) {
@@ -51,10 +53,10 @@ function App() {
       alert("Please select at least one user to split the bill.");
       return;
     }
-  
+
     const totalPeople = selectedUsers.length + 1; // Including the user
     const splitAmount = (Number(billAmount) / totalPeople).toFixed(2);
-  
+
     // Deduct amount from current user
     const newUserBalance = balance - splitAmount;
     if (newUserBalance < 0) {
@@ -63,7 +65,7 @@ function App() {
     }
     await updateDoc(doc(db, "users", user.email), { balance: newUserBalance });
     setBalance(newUserBalance);
-  
+
     // Update each selected user
     for (const email of selectedUsers) {
       const userRef = doc(db, "users", email);
@@ -71,7 +73,7 @@ function App() {
       if (userDoc.exists()) {
         const userBalance = userDoc.data().balance || 0;
         await updateDoc(userRef, { balance: userBalance + Number(splitAmount) });
-  
+
         // Save transaction for each user
         await addDoc(collection(db, "transactions"), {
           type: "Bill Split",
@@ -82,12 +84,16 @@ function App() {
         });
       }
     }
-  
+
+    // ✅ Generate Payment Link and Save it to State
+    const paymentUrl = `https://secure-pay.com/pay?amount=${splitAmount}&users=${selectedUsers.join(",")}`;
+    setPaymentLink(paymentUrl);
+
     alert(`Bill of $${billAmount} split among ${totalPeople} people. Each pays $${splitAmount}`);
     setBillAmount("");
     setSelectedUsers([]);
   };
-  
+
   useEffect(() => {
     const fetchUsers = async () => {
       const querySnapshot = await getDocs(collection(db, "users"));
@@ -101,13 +107,29 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (user) {
+      const requestRef = collection(db, "moneyRequests");
+
+      const unsubscribe = onSnapshot(requestRef, (snapshot) => {
+        const requests = snapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() }))
+          .filter((req) => req.recipient === user.email || req.sender === user.email); // Show only relevant requests
+
+        setMoneyRequests(requests);
+      });
+
+      return () => unsubscribe(); // Cleanup the listener when user logs out
+    }
+  }, [user]);
+
+  useEffect(() => {
     const fetchBalance = async () => {
       if (user) {
         const userDoc = await getDoc(doc(db, "users", user.email));
         if (userDoc.exists()) {
           setBalance(userDoc.data().balance);
         } else {
-          await setDoc(doc(db, "users", user.email), { name: user.displayName, balance: 1000 });
+          await setDoc(doc(db, "users", user.email), { name: user.displayName, balance: 1000 }, { merge: true });
           setBalance(1000);
         }
       }
@@ -117,17 +139,17 @@ function App() {
 
   const [transactions, setTransactions] = useState([]);
 
-useEffect(() => {
-  if (user) {
-    const unsubscribe = onSnapshot(collection(db, "transactions"), (snapshot) => {
-      const txnList = snapshot.docs
-        .map((doc) => doc.data())
-        .filter((txn) => txn.sender === user.email || txn.recipient === user.email);
-      setTransactions(txnList);
-    });
-    return () => unsubscribe();
-  }
-}, [user]);
+  useEffect(() => {
+    if (user) {
+      const unsubscribe = onSnapshot(collection(db, "transactions"), (snapshot) => {
+        const txnList = snapshot.docs
+          .map((doc) => doc.data())
+          .filter((txn) => txn.sender === user.email || txn.recipient === user.email);
+        setTransactions(txnList);
+      });
+      return () => unsubscribe();
+    }
+  }, [user]);
 
 
   const handleLogin = async () => {
@@ -254,115 +276,150 @@ useEffect(() => {
               <Button variant="contained" color="secondary" fullWidth sx={{ mt: 2 }} onClick={splitBill}>
                 Split Bill
               </Button>
+              {paymentLink && (
+                <Typography variant="body1" sx={{ mt: 2 }}>
+                  Payment Link:{" "}
+                  <a href={paymentLink} target="_blank" rel="noopener noreferrer">
+                    {paymentLink}
+                  </a>
+                </Typography>
+              )}
+
             </CardContent>
           </Card>
 
           {/* Request Money Section */}
-<Card sx={{ mt: 4, p: 3, boxShadow: 3 }}>
-  <CardContent>
-    <Typography variant="h6">Request Money</Typography>
+          <Card sx={{ mt: 4, p: 3, boxShadow: 3 }}>
+            <CardContent>
+              <Typography variant="h6">Request Money</Typography>
 
-    {/* Amount Input */}
-    <TextField
-      fullWidth
-      label="Enter amount"
-      type="number"
-      value={requestAmount}
-      onChange={(e) => setRequestAmount(e.target.value)}
-      sx={{ mt: 2 }}
-    />
+              {/* Amount Input */}
+              <TextField
+                fullWidth
+                label="Enter amount"
+                type="number"
+                value={requestAmount}
+                onChange={(e) => setRequestAmount(e.target.value)}
+                sx={{ mt: 2 }}
+              />
 
-    {/* Select Recipient */}
-    <FormControl fullWidth sx={{ mt: 2 }}>
-      <InputLabel>Select a user</InputLabel>
-      <Select value={requestRecipient} onChange={(e) => setRequestRecipient(e.target.value)}>
-        <MenuItem value="">-- Select a user --</MenuItem>
-        {users.map((u) =>
-          u.email !== user.email && (
-            <MenuItem key={u.email} value={u.email}>
-              {u.name} ({u.email})
-            </MenuItem>
-          )
-        )}
-      </Select>
-    </FormControl>
+              {/* Select Recipient */}
+              <FormControl fullWidth sx={{ mt: 2 }}>
+                <InputLabel>Select a user</InputLabel>
+                <Select value={requestRecipient} onChange={(e) => setRequestRecipient(e.target.value)}>
+                  <MenuItem value="">-- Select a user --</MenuItem>
+                  {users.map((u) =>
+                    u.email !== user.email && (
+                      <MenuItem key={u.email} value={u.email}>
+                        {u.name} ({u.email})
+                      </MenuItem>
+                    )
+                  )}
+                </Select>
+              </FormControl>
 
-    {/* Due Date Input */}
-    <TextField
-      fullWidth
-      label="Due Date"
-      type="date"
-      value={dueDate}
-      onChange={(e) => setDueDate(e.target.value)}
-      InputLabelProps={{ shrink: true }}
-      sx={{ mt: 2 }}
-    />
+              {/* Due Date Input */}
+              <TextField
+                fullWidth
+                label="Due Date"
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                InputLabelProps={{ shrink: true }}
+                sx={{ mt: 2 }}
+              />
 
-    {/* Request Money Button */}
-    <Button
-      variant="contained"
-      color="warning"
-      fullWidth
-      sx={{ mt: 3 }}
-      onClick={() => {
-        if (!requestRecipient || !requestAmount || !dueDate) {
-          alert("Please fill in all fields.");
-          return;
-        }
+              {/* Request Money Button */}
+              <Button
+                variant="contained"
+                color="warning"
+                fullWidth
+                sx={{ mt: 3 }}
+                onClick={() => {
+                  if (!requestRecipient || !requestAmount || !dueDate) {
+                    alert("Please fill in all fields.");
+                    return;
+                  }
 
-        const requestData = {
-          sender: user.email,
-          recipient: requestRecipient,
-          amount: requestAmount,
-          dueDate,
-          status: "Pending",
-          timestamp: new Date().toISOString(),
-        };
+                  const requestData = {
+                    sender: user.email,
+                    recipient: requestRecipient,
+                    amount: requestAmount,
+                    dueDate,
+                    status: "Pending",
+                    timestamp: new Date().toISOString(),
+                  };
 
-        addDoc(collection(db, "moneyRequests"), requestData)
-          .then(() => {
-            alert(`Money request of $${requestAmount} sent to ${requestRecipient} (Due: ${dueDate})`);
-            setRequestAmount("");
-            setRequestRecipient("");
-            setDueDate("");
-          })
-          .catch((error) => console.error("Request Money Error:", error));
-      }}
-    >
-      Request Money
-    </Button>
-  </CardContent>
-</Card>
+                  addDoc(collection(db, "moneyRequests"), requestData)
+                    .then(() => {
+                      alert(`Money request of $${requestAmount} sent to ${requestRecipient} (Due: ${dueDate})`);
+                      setRequestAmount("");
+                      setRequestRecipient("");
+                      setDueDate("");
+                    })
+                    .catch((error) => console.error("Request Money Error:", error));
+                }}
+              >
+                Request Money
+              </Button>
+            </CardContent>
+          </Card>
 
-{/* Transaction History Section */}
-<Card sx={{ mt: 4, p: 3, boxShadow: 3 }}>
-  <CardContent>
-    <Typography variant="h6">Transaction History</Typography>
-    {transactions.length === 0 ? (
-      <Typography variant="body2" color="textSecondary" sx={{ mt: 2 }}>
-        No transactions yet.
-      </Typography>
-    ) : (
-      <ul style={{ padding: 0 }}>
-        {transactions.map((txn, index) => (
-          <li key={index} style={{
-            listStyle: "none",
-            padding: "8px",
-            borderBottom: "1px solid #ddd",
-            color: txn.sender === user.email ? "red" : "green"
-          }}>
-            {txn.sender === user.email
-              ? `Sent $${txn.amount} to ${txn.recipient}`
-              : `Received $${txn.amount} from ${txn.sender}`}
-            <Typography variant="caption" display="block" color="textSecondary">
-              {new Date(txn.timestamp).toLocaleString()}
-            </Typography>
-          </li>
-        ))}
-      </ul>
-    )}
-  </CardContent>
-</Card>
+          <Card sx={{ mt: 4, p: 3, boxShadow: 3 }}>
+            <CardContent>
+              <Typography variant="h6">Pending Money Requests</Typography>
+
+              {moneyRequests.length === 0 ? (
+                <Typography variant="body2" color="textSecondary" sx={{ mt: 2 }}>
+                  No pending requests.
+                </Typography>
+              ) : (
+                <ul style={{ padding: 0 }}>
+                  {moneyRequests.map((req) => (
+                    <li key={req.id} style={{
+                      listStyle: "none",
+                      padding: "8px",
+                      borderBottom: "1px solid #ddd"
+                    }}>
+                      {req.sender === user.email
+                        ? `You requested $${req.amount} from ${req.recipient} (Due: ${req.dueDate})`
+                        : `${req.sender} requested $${req.amount} from you (Due: ${req.dueDate})`}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Transaction History Section */}
+          <Card sx={{ mt: 4, p: 3, boxShadow: 3 }}>
+            <CardContent>
+              <Typography variant="h6">Transaction History</Typography>
+              {transactions.length === 0 ? (
+                <Typography variant="body2" color="textSecondary" sx={{ mt: 2 }}>
+                  No transactions yet.
+                </Typography>
+              ) : (
+                <ul style={{ padding: 0 }}>
+                  {transactions.map((txn, index) => (
+                    <li key={index} style={{
+                      listStyle: "none",
+                      padding: "8px",
+                      borderBottom: "1px solid #ddd",
+                      color: txn.sender === user.email ? "red" : "green"
+                    }}>
+                      {txn.sender === user.email
+                        ? `Sent $${txn.amount} to ${txn.recipient}`
+                        : `Received $${txn.amount} from ${txn.sender}`}
+                      <Typography variant="caption" display="block" color="textSecondary">
+                        {new Date(txn.timestamp).toLocaleString()}
+                      </Typography>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
 
 
 
